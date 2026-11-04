@@ -52,7 +52,8 @@ Accepted URL forms:
 - `https://{org}.visualstudio.com/[DefaultCollection/]{project}/_git/{repo}/pullrequest/{id}`
 
 No query, fragment, port, user info or encoded escapes. Organization, project and
-repository come from the URL. There is no org/project allow-list in the script: the
+repository come from the URL, and API calls stay on the host the URL names. Pass the
+user's URL unchanged; do not rewrite one form into the other. There is no org/project allow-list in the script: the
 gateway egress profile and the external credential provider policy are the boundary and
 reject destinations they do not authorize. A provider denial is final; never retry it by
 another route.

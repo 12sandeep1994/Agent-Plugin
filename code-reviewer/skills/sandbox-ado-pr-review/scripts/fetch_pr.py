@@ -2,6 +2,8 @@
 
 No credentials are accepted. curl uses the sandbox-managed egress proxy.
 The organization, project, repository and PR number come from the PR URL.
+API calls use the host the PR URL names (dev.azure.com/{org} or
+{org}.visualstudio.com), so the organization is never re-cased or rewritten.
 This script has no organization/project allow-list: the gateway egress
 profile and the external credential provider policy are the boundary and
 reject any destination they do not authorize. Provider denials are final.
@@ -21,9 +23,9 @@ import uuid
 
 ROOT = Path("/workspace/review")
 REVIEWS_ROOT = Path("/workspace/reviews")
-API_HOST = "https://dev.azure.com/"
-SCHEMA_VERSION = 3
-REQUEST_KEYS = {"schemaVersion", "pullRequestId", "organization", "project", "repository"}
+API_HOST = "dev.azure.com"
+SCHEMA_VERSION = 4
+REQUEST_KEYS = {"schemaVersion", "pullRequestId", "apiHost", "organization", "project", "repository"}
 GUID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 ORGANIZATION = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,49}")
 VISUALSTUDIO_HOST = re.compile(r"([a-z0-9][a-z0-9-]{0,49})\.visualstudio\.com")
@@ -56,6 +58,10 @@ def request():
     organization(value["organization"])
     component(value["project"])
     component(value["repository"])
+    host = value["apiHost"]
+    hosted = VISUALSTUDIO_HOST.fullmatch(host) if isinstance(host, str) else None
+    if host != API_HOST and (not hosted or hosted.group(1) != value["organization"]):
+        raise ValueError("Unrecognized Azure DevOps API host.")
     return value
 
 
@@ -92,8 +98,11 @@ def repository_prefix():
         # Keep the project segment as the user supplied it: egress policies commonly allow
         # project paths by name, so switching to the project GUID would be denied.
         repository = repository_identity(snapshot()["pr"]["repository"])["id"]
-    return (API_HOST + urllib.parse.quote(selected["organization"], safe="") + "/"
-            + urllib.parse.quote(project, safe="") + "/_apis/git/repositories/"
+    host = selected["apiHost"]
+    # dev.azure.com carries the organization in the path; {org}.visualstudio.com in the host.
+    base = (f"https://{host}/" + urllib.parse.quote(selected["organization"], safe="") + "/"
+            if host == API_HOST else f"https://{host}/")
+    return (base + urllib.parse.quote(project, safe="") + "/_apis/git/repositories/"
             + urllib.parse.quote(repository, safe=""))
 
 
@@ -189,7 +198,7 @@ def parse_pr_url(url):
     if not number.isascii() or not number.isdigit() or not 0 < int(number) <= 2147483647:
         raise ValueError("A positive PR number is required in the URL.")
     return {"schemaVersion": SCHEMA_VERSION, "pullRequestId": int(number),
-            "organization": org, "project": parts[0], "repository": parts[2]}
+            "apiHost": host if hosted else API_HOST, "organization": org, "project": parts[0], "repository": parts[2]}
 
 
 def start(url, *, review_root=None):

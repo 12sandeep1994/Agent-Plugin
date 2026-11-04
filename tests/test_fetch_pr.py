@@ -185,25 +185,33 @@ class ReviewReaderTests(unittest.TestCase):
                 READER.get("/pullrequests/123")
         self.assertEqual(calls.call_count, 1)
 
-    def test_both_url_forms_parse_to_the_same_request_and_dev_azure_api_base(self):
-        expected = {"schemaVersion": 3, "pullRequestId": 123, "organization": "contoso",
-                    "project": "Fabrikam", "repository": "Widgets"}
-        for url in (URL, URL + "/",
-                    "https://contoso.visualstudio.com/Fabrikam/_git/Widgets/pullrequest/123",
+    def test_each_url_form_keeps_its_own_api_host(self):
+        expected = {"schemaVersion": 4, "pullRequestId": 123, "apiHost": "dev.azure.com",
+                    "organization": "contoso", "project": "Fabrikam", "repository": "Widgets"}
+        for url in (URL, URL + "/"):
+            with self.subTest(url=url):
+                self.assertEqual(expected, READER.parse_pr_url(url))
+        hosted = {**expected, "apiHost": "contoso.visualstudio.com"}
+        for url in ("https://contoso.visualstudio.com/Fabrikam/_git/Widgets/pullrequest/123",
                     f"https://contoso.visualstudio.com/{COLLECTION}/Fabrikam/_git/Widgets/pullrequest/123",
                     f"https://contoso.visualstudio.com/{COLLECTION.lower()}/Fabrikam/_git/Widgets/pullrequest/123"):
             with self.subTest(url=url):
-                self.assertEqual(expected, READER.parse_pr_url(url))
+                self.assertEqual(hosted, READER.parse_pr_url(url))
         spaced = READER.parse_pr_url("https://dev.azure.com/contoso/Fabrikam%20Tools/_git/Widget%20App/pullrequest/7")
         self.assertEqual(("Fabrikam Tools", "Widget App", 7),
                          (spaced["project"], spaced["repository"], spaced["pullRequestId"]))
         guids = READER.parse_pr_url(f"https://dev.azure.com/contoso/{PROJECT.upper()}/_git/{REPOSITORY_ID}/pullrequest/9")
         self.assertEqual((PROJECT, REPOSITORY_ID), (guids["project"], guids["repository"]))
         with patch.object(READER, "ROOT", self.directory):
-            for url in (URL, f"https://contoso.visualstudio.com/{COLLECTION}/Fabrikam/_git/Widgets/pullrequest/123"):
-                (self.directory / "request.json").write_text(json.dumps(READER.parse_pr_url(url)))
-                self.assertEqual("https://dev.azure.com/contoso/Fabrikam/_apis/git/repositories/Widgets",
-                                 READER.repository_prefix())
+            (self.directory / "request.json").write_text(json.dumps(READER.parse_pr_url(URL)))
+            self.assertEqual("https://dev.azure.com/contoso/Fabrikam/_apis/git/repositories/Widgets",
+                             READER.repository_prefix())
+            # A visualstudio.com URL only yields the lowercased organization, so the API call stays
+            # on that host instead of re-casing the organization into a dev.azure.com path.
+            (self.directory / "request.json").write_text(json.dumps(READER.parse_pr_url(
+                f"https://contoso.visualstudio.com/{COLLECTION}/Fabrikam/_git/Widgets/pullrequest/123")))
+            self.assertEqual("https://contoso.visualstudio.com/Fabrikam/_apis/git/repositories/Widgets",
+                             READER.repository_prefix())
             (self.directory / "request.json").write_text(json.dumps(spaced))
             self.assertEqual("https://dev.azure.com/contoso/Fabrikam%20Tools/_apis/git/repositories/Widget%20App",
                              READER.repository_prefix())
@@ -290,15 +298,17 @@ class ReviewReaderTests(unittest.TestCase):
         with patch.object(READER, "ROOT", self.directory), patch.object(READER.subprocess, "run", side_effect=transport):
             first = READER.start(URL, review_root=self.directory / "widgets")
             original = (self.directory / "widgets" / "snapshot.json").read_bytes()
+            split = len(urls)
             selected = other
             second = READER.start(
                 f"https://contoso.visualstudio.com/{COLLECTION}/{PROJECT}/_git/{other['id']}/pullrequest/123",
                 review_root=self.directory / "gadgets")
             self.assertNotEqual(first["review"]["repository"], second["review"]["repository"])
             self.assertEqual("Fabrikam", second["review"]["repository"]["project"]["name"])
-            self.assertTrue(all(url.startswith("https://dev.azure.com/contoso/") for url in urls))
+            self.assertTrue(all(url.startswith("https://dev.azure.com/contoso/") for url in urls[:split]))
+            self.assertTrue(all(url.startswith("https://contoso.visualstudio.com/") for url in urls[split:]))
             self.assertTrue(any(url.startswith(
-                f"https://dev.azure.com/contoso/{PROJECT}/_apis/git/repositories/{other['id']}/items?")
+                f"https://contoso.visualstudio.com/{PROJECT}/_apis/git/repositories/{other['id']}/items?")
                 for url in urls))
             self.assertEqual(original, (self.directory / "widgets" / "snapshot.json").read_bytes())
             request = json.loads((READER.ROOT / "request.json").read_text())
@@ -353,7 +363,11 @@ class ReviewReaderTests(unittest.TestCase):
         for value in ({"pullRequestId": 123},
                       {**current, "schemaVersion": 2},
                       {**current, "schemaVersion": True},
-                      {**current, "schemaVersion": "3"},
+                      {**current, "schemaVersion": 3},
+                      {**current, "schemaVersion": "4"},
+                      {key: item for key, item in current.items() if key != "apiHost"},
+                      {**current, "apiHost": "evil.example"},
+                      {**current, "apiHost": "northwind.visualstudio.com"},
                       {key: item for key, item in current.items() if key != "organization"},
                       {**current, "extra": 1},
                       {**current, "pullRequestId": True},
