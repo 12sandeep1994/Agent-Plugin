@@ -1,0 +1,354 @@
+# PR Reviewer Scripts
+
+Automation scripts for conducting comprehensive pull request code reviews.
+
+## review-artifacts.mjs
+
+Capture and validate immutable review-stage results using the
+[shared handoff contract](../../../references/review-handoffs.md). It computes
+snapshot identity from captured diff bytes and repository/head/base metadata,
+preserves native JSON or Markdown payloads, and rejects stale assignments,
+corrupt artifacts, output collisions and incomplete candidate accounting.
+Read-only workers return their result; host/controller owns persistence.
+Validation is not proof of agent execution or semantic correctness.
+
+For re-reviews, context requires `reviewType: "re-review"` and `reviewBase`
+(the completed review's head). The snapshot also binds that comparison identity.
+`mergeBase` remains the target merge-base. Missing incremental baselines fail;
+legacy initial-review inputs keep their original IDs. Initial `reviewBase`, if
+supplied, must equal `mergeBase`.
+Saved local baselines also supply `reviewBaseSnapshotId` (a sha256 snapshot ID).
+It distinguishes reviewed dirty content at the same commit; the caller must
+still reconstruct the actual content delta or report an unavailable baseline.
+
+```text
+node review-artifacts.mjs snapshot --context <context.json>
+node review-artifacts.mjs capture --assignment <assignment.json> --input <raw-result> --out <artifact.json>
+node review-artifacts.mjs read --assignment <assignment.json> --input <artifact.json>
+```
+
+## classify-review.mjs
+
+Deterministic measurements and cost guidance. Run it after creating the context
+pack, before scout-owned reviewer selection.
+
+```bash
+node classify-review.mjs \
+  --context <scratch>/pr-<number>/context.json \
+  --out <scratch>/pr-<number>/review-signals.json
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--context` | required | Context-pack JSON with `changedFiles` and normally `diffPath` |
+| `--diff` | `context.diffPath` | Override the unified diff path |
+| `--out` | stdout | Where to write the signals |
+
+The script computes file count, changed lines, hunks, top-level areas, new
+project/module and public-type signals, risk flags, and a conservative
+mechanical-change signal. It emits one `TINY | SMALL | MEDIUM | LARGE` tier,
+the triggering rule, signals and `costGuidance` (workspace mode and focus).
+Schema version 2 deliberately removes `plan`, scanning lanes, named gate agents
+and reviewer limits. Consumers must obtain the scout's selection separately;
+renaming this output to review-plan.json does not make it an executable plan.
+
+The tier is authoritative for cost policy. Models do not re-estimate it. When
+both are available, the classifier verifies that the diff
+covers the context pack's exact changed-file list. A mismatch fails closed; the
+workflow reports the mismatch and repairs the input before planning.
+
+The scout chooses specialists and requests targeted missing context. The
+controller validates that selection and applies fixed verification, grading and
+adjudication gates from `reference/scout-planning.md`. Size alone never selects
+a reviewer or splits a causal trace. Signals nominate questions, not violations.
+
+## filter-findings.mjs
+
+Deterministic pre-verification filter. Run it at step 10a, after collecting
+every agent's JSON envelope and before any verification or grading.
+
+```bash
+node filter-findings.mjs \
+  --diff <scratch>/pr-<number>/diff.patch \
+  --findings <scratch>/pr-<number>/findings.json \
+  --out <scratch>/pr-<number>/filtered.json
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--diff` | required | Unified diff; `-` reads stdin |
+| `--findings` | required | JSON: an array of agent envelopes, one envelope, or a bare array of findings |
+| `--tolerance` | `2` | Line slack when matching a cited line to a changed line |
+| `--max-per-agent` | `5` | Cap applied after merging |
+| `--out` | stdout | Where to write the result |
+
+It does three things no model should be asked to do:
+
+1. **Anchors** each finding to the diff. A finding on unchanged code is kept
+   only when it names a concrete `enablingChange` on a changed line; otherwise
+   it moves to `preExisting`, which never blocks and never gets an inline
+   comment. An exactly-cited line is marked `anchorMatch: "EXACT"`; one inside
+   the slack window is marked `NEAR` so the verifier re-checks it.
+2. **Merges** only exact candidates at the same location with matching claim,
+   mechanism, trigger, disconfirmation, status, exposure, enabling change,
+   consequence, required outcome, and closure check.
+   Preserve every original in `candidateSources`, the highest proposed severity,
+   and the union of `instances`. Similar wording or nearby lines is insufficient;
+   causal equivalence belongs to verification/synthesis.
+3. **Caps** each agent at `--max-per-agent`, highest severity first.
+
+Output: `{ stats, toVerify, preExisting, dropped, merges }`. Exit code `2` means
+bad usage or unparsable input; on failure, check anchors by hand rather than
+proceeding with unanchored findings.
+
+## Quick Start
+
+**LLM Workflow** (Claude uses this approach):
+
+1. Fetch PR metadata using MCP:
+```
+$pr = mcp__azure-devops__getPullRequest -repository "<repository>" -pullRequestId 12345
+$sourceBranch = $pr.sourceRefName -replace '^refs/heads/', ''  # e.g., "feature/add-bulk-upload"
+```
+
+2. Call script with extracted parameters:
+```powershell
+cd .claude/skills/pr-reviewer/scripts
+
+.\Start-PRReview.ps1 `
+    -PRNumber 12345 `
+    -SourceBranch $sourceBranch `
+    -PRTitle $pr.title `
+    -PRAuthor $pr.createdBy.displayName
+```
+
+This creates an isolated worktree with complete review setup.
+
+**Linux / Bash:**
+
+```bash
+bash ./Start-PRReview.sh \
+    --pr-number 12345 \
+    --source-branch "$sourceBranch" \
+    --pr-title "$prTitle" \
+    --pr-author "$prAuthor"
+```
+
+## Start-PRReview.ps1 / Start-PRReview.sh
+
+**Purpose**: All-in-one script to set up a complete PR review environment
+
+**Key Features**:
+- Creates isolated git worktree for review work
+- Fetches PR metadata and changes
+- Analyzes code statistics and categorizes files
+- Sets up organized directory structure
+- Creates pre-filled review templates
+- Saves complete diff for offline review
+- Worktree is excluded from git (in `worktrees/` directory)
+
+**Parameters**:
+- `-PRNumber` (Required): Pull request number to review
+- `-SourceBranch` (Required): Source branch name from PR (LLM fetches via MCP)
+- `-Repository` (Optional): Repository name supplied by the upstream review workflow
+- `-BaseBranch` (Optional): Branch to compare against (defaults to `origin/HEAD`, then `main`, `master`, `dev`)
+- `-PRTitle` (Optional): PR title (LLM fetches via MCP)
+- `-PRAuthor` (Optional): PR author (LLM fetches via MCP)
+- `-PRDescription` (Optional): PR description (LLM fetches via MCP)
+- `-SkipWorktree` (Optional): Skip worktree creation and use the current
+    directory. Its `HEAD` must already match the fetched source-branch tip.
+
+The Bash version uses `--pr-number`, `--source-branch`, `--base-branch`,
+`--pr-title`, `--pr-author`, `--pr-description`, and `--skip-worktree`. With
+`--skip-worktree`, check out the source branch tip first; the script rejects a
+different `HEAD` rather than reviewing the wrong commit.
+Run `bash ./Start-PRReview.sh --help` for the complete Linux usage.
+
+**Example - Full Parameters** (Recommended):
+```powershell
+.\Start-PRReview.ps1 `
+    -PRNumber 12345 `
+    -SourceBranch "feature/add-bulk-upload" `
+    -PRTitle "Add bulk upload feature" `
+    -PRAuthor "Example Developer"
+```
+
+**Example - Minimal** (Missing metadata):
+```powershell
+.\Start-PRReview.ps1 -PRNumber 10395 -SourceBranch "bugfix/fix-validation"
+```
+
+**Example - Without Worktree**:
+```powershell
+.\Start-PRReview.ps1 `
+    -PRNumber 98765 `
+    -SourceBranch "feature/new-api" `
+    -SkipWorktree
+```
+
+**Example - Linux**:
+
+```bash
+bash ./Start-PRReview.sh \
+    --pr-number 98765 \
+    --source-branch feature/new-api \
+    --skip-worktree
+```
+
+**Output Structure**:
+```
+worktrees/
+└── pr-12345-review/                           # Isolated worktree
+    └── scratchpad/
+        └── pr_reviews/
+            └── pr-12345/
+                ├── README.md                  # Instructions and checklist
+                ├── diffs/                     # PR diffs
+                │   ├── full_diff.patch
+                │   └── changed_files.txt
+                ├── analysis/                  # Review templates
+                │   ├── code_quality_analysis.md
+                │   ├── security_concerns.md
+                │   ├── performance_review.md
+                │   ├── testing_assessment.md
+                │   └── recommendations.md
+                └── feedback/                  # Final feedback
+                    └── pr_feedback.md
+```
+
+**Returns**: Hashtable with paths to all directories created
+
+**Clean Up After Review**:
+```powershell
+# From repository root
+git worktree remove worktrees/pr-12345-review
+```
+
+## Review Workflow
+
+### 1. Setup
+```powershell
+.\Start-PRReview.ps1 -PRNumber 12345 -SourceBranch "feature/example"
+```
+
+```bash
+bash ./Start-PRReview.sh --pr-number 12345 --source-branch feature/example
+```
+
+### 2. Review Templates
+
+The script creates these analysis templates:
+
+**code_quality_analysis.md**: Analyze design, maintainability, code smells
+**security_concerns.md**: Check OWASP Top 10 vulnerabilities
+**performance_review.md**: Identify performance bottlenecks
+**testing_assessment.md**: Evaluate test coverage and quality
+**recommendations.md**: Specific, actionable improvements
+
+### 3. Consolidated Feedback
+
+**pr_feedback.md**: Final review feedback to share with PR author
+
+### 4. Review Checklist
+
+The README.md includes a comprehensive checklist:
+- [ ] All changed files examined
+- [ ] Security vulnerabilities checked
+- [ ] Performance implications assessed
+- [ ] Testing adequacy reviewed
+- [ ] And more...
+
+## Integration with PR Providers
+
+The skill auto-detects the provider (GitHub or Azure DevOps) from the git remote —
+see [provider-resolution.md](../../../references/provider-resolution.md). Use the
+matching tools:
+
+**Fetch PR Details**:
+```
+# GitHub
+gh pr view <n> --json number,title,author,headRefName,baseRefName,body
+# Azure DevOps
+mcp__azure-devops__getPullRequest
+```
+
+**Get File Changes**:
+```
+# GitHub
+gh pr diff <n> --name-only      # files;  gh pr diff <n>  for the full diff
+# Azure DevOps
+mcp__azure-devops__getAllPullRequestChanges
+mcp__azure-devops__getPullRequestFileChanges
+```
+
+**Add Review Comments**:
+```
+# GitHub
+gh api repos/<owner>/<repo>/pulls/<n>/comments ...   # inline (line-specific)
+gh pr comment <n> --body ...                         # general comment
+# Azure DevOps
+mcp__azure-devops__addPullRequestComment           # General comment
+mcp__azure-devops__addPullRequestInlineComment     # Line-specific
+mcp__azure-devops__addPullRequestFileComment       # File-level
+```
+
+**Approve PR**:
+```
+# GitHub
+gh pr review <n> --approve --body ...
+# Azure DevOps
+mcp__azure-devops__approvePullRequest
+```
+
+## Review Quality Standards
+
+Your review should check for:
+
+### Security (OWASP Top 10)
+1. Broken Access Control
+2. Cryptographic Failures
+3. Injection (SQL, XSS, Command)
+4. Insecure Design
+5. Security Misconfiguration
+6. Vulnerable Components
+7. Authentication Failures
+8. Data Integrity Failures
+9. Logging Failures
+10. SSRF
+
+### Performance
+- N+1 query issues
+- Memory leaks
+- Algorithm efficiency
+- Network performance
+- Caching opportunities
+
+### Code Quality
+- Design patterns
+- SOLID principles
+- Code smells
+- Anti-patterns
+- Maintainability
+
+### Testing
+- Test coverage
+- Edge cases
+- Integration tests
+- Test quality
+
+## Tips for Effective Reviews
+
+1. **Be Specific**: Always include file:line references
+2. **Show Examples**: Include code snippets for issues and fixes
+3. **Be Balanced**: Praise good work along with concerns
+4. **Be Actionable**: Provide clear, implementable recommendations
+5. **Consider Context**: Understand PR scope and constraints
+6. **Be Professional**: Respectful, objective feedback
+
+## Version History
+
+- **v1.0.0** (2025-11-02): Initial pr-reviewer script
+  - Automated worktree setup
+  - Comprehensive review templates
+  - Security, performance, testing analysis
+  - Azure DevOps MCP integration
