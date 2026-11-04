@@ -89,8 +89,9 @@ def repository_prefix():
     selected = request()
     project, repository = selected["project"], selected["repository"]
     if (ROOT / "snapshot.json").exists():
-        frozen = repository_identity(snapshot()["pr"]["repository"])
-        project, repository = frozen["project"]["id"], frozen["id"]
+        # Keep the project segment as the user supplied it: egress policies commonly allow
+        # project paths by name, so switching to the project GUID would be denied.
+        repository = repository_identity(snapshot()["pr"]["repository"])["id"]
     return (API_HOST + urllib.parse.quote(selected["organization"], safe="") + "/"
             + urllib.parse.quote(project, safe="") + "/_apis/git/repositories/"
             + urllib.parse.quote(repository, safe=""))

@@ -208,6 +208,9 @@ class PublicationTests(unittest.TestCase):
         report = {**self.report, "review": reader.review_provenance(reader.completed_snapshot())}
         self.assertEqual(0, publisher.publish(report, preview=True)["remote_writes"])
         self.assertTrue(reader.repository_prefix().endswith("/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"))
+        # The project stays as named in the PR URL so name-scoped egress policies still match.
+        self.assertTrue(reader.repository_prefix().startswith(
+            "https://dev.azure.com/contoso/Fabrikam/_apis/git/repositories/"))
 
 
 class TransportTests(unittest.TestCase):
