@@ -1,0 +1,5 @@
+{
+  "name": "review-host",
+  "description": "Review workspace host kit for sandboxed pull-request review: review-setup (worktree slot pool, PR merge preparation, reset, archive), repo-setup, merge-review, review-host-rules (operating rules) and sandbox-http (curl through the sandbox egress proxy for Azure DevOps and GitHub REST).",
+  "version": "0.1.0"
+}
