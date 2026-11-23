@@ -2382,9 +2382,10 @@ def _process_census() -> list[dict]:
     try:
         if int(Path('/proc/self/stat').read_text().split(' ', 1)[0]) != os.getpid():
             raise ValueError("procfs PID mapping mismatch")
-        nspid = next(line.split()[1:] for line in Path('/proc/self/status').read_text().splitlines()
-                     if line.startswith('NSpid:'))
-        if nspid != [str(os.getpid())]:
+        nspid = next((line.split()[1:] for line in Path('/proc/self/status').read_text().splitlines()
+                      if line.startswith('NSpid:')), None)
+        # gVisor reports no NSpid line; the /proc/self PID check above already ties procfs to this namespace.
+        if nspid is not None and nspid != [str(os.getpid())]:
             raise ValueError("procfs namespace mismatch")
         for line in Path('/proc/self/mountinfo').read_text().splitlines():
             fields = line.split()
@@ -2471,6 +2472,7 @@ def run_owned(args: list[str], *, timeout: float, term_grace: float = 2.0,
                   'import os,sys; fd=int(sys.argv[1]); go=os.read(fd,1); os.close(fd); '
                   'os.execvpe(sys.argv[2],sys.argv[2:],os.environ) if go==b"1" else sys.exit(125)',
                   str(gate_read), *args]
+    _become_subreaper()
     try:
         process = subprocess.Popen(
             launch,
@@ -2678,6 +2680,45 @@ def _signal_owned_group(pgid: int, sig: int) -> None:
 
 
 
+_SUBREAPER: list[bool] = []
+
+
+def _become_subreaper() -> None:
+    """Adopt orphaned descendants so their exits can be reaped here.
+
+    A group member whose parent exits first is reparented to the nearest
+    subreaper. In a gVisor sandbox that is the agent's runtime, which never
+    reaps it, and procfs there lists no task directory for the zombie, so the
+    census cannot see it. Adopting orphans lets `_reap_group_zombies` remove
+    exited members, after which killpg reports ESRCH. Where prctl is missing,
+    the census path alone decides, as before.
+    """
+    if _SUBREAPER:
+        return
+    _SUBREAPER.append(True)
+    try:
+        import ctypes
+        ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0)  # PR_SET_CHILD_SUBREAPER
+    except (OSError, AttributeError):
+        pass
+
+
+def _reap_group_zombies(pgid: int) -> None:
+    """Reap exited adopted members of an owned group; never a live one, never the leader early."""
+    try:
+        # The leader (pid == pgid) belongs to its Popen until Popen has reaped it.
+        os.waitid(os.P_PID, pgid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        return
+    except ChildProcessError:
+        pass
+    while True:
+        try:
+            if os.waitid(os.P_PGID, pgid, os.WEXITED | os.WNOHANG) is None:
+                return
+        except ChildProcessError:
+            return
+
+
 def _group_confirmed_empty(pgid: int, deadline: float) -> bool:
     """Prove no executable group members: ESRCH, or a complete zombie-only census.
 
@@ -2687,6 +2728,7 @@ def _group_confirmed_empty(pgid: int, deadline: float) -> bool:
     Unknown visibility and permission failures remain blocked.
     """
     while True:
+        _reap_group_zombies(pgid)
         try:
             os.killpg(pgid, 0)
         except ProcessLookupError:
@@ -3498,6 +3540,17 @@ def bounded_fetch(repo: Path, remote: str, refs: list[str], *, depth: int,
     return result
 
 
+def shallow_fetch_args(*args: str) -> list[str]:
+    """Prefix a shallow-updating fetch with a size-and-mtime stat check.
+
+    On gVisor's 9p mount, a later git process can see a different inode or
+    owner for a shallow file that an earlier fetch renamed into place. With the
+    default check git then aborts with "shallow file has changed since we read
+    it". The source and acquisition locks already serialize shallow writers.
+    """
+    return ["-c", "core.checkStat=minimal", *args]
+
+
 def _fetch_via_bounded_store(
     repo: Path,
     remote: str,
@@ -3633,13 +3686,13 @@ def _fetch_via_bounded_store(
     state['operation'] = operation
     atomic_json(state_path, state)
     try:
-        fetch_args = [
+        fetch_args = shallow_fetch_args(
             "-c", "gc.auto=0", "-c", "maintenance.auto=false", "fetch", "--progress",
             "--no-tags",
             *([] if warm_cache else [f"--depth={effective_depth}"]),
             "--", remote_url,
             *["+" + mapping for mapping in mappings],
-        ]
+        )
         snapshot = tuple(requested)
         acquisition = None
         for attempt in (1, 2):
@@ -3744,7 +3797,7 @@ def _fetch_via_bounded_store(
             atomic_json(state_path, state)
         assert acquisition is not None
         if deepen and warm_cache:
-            deepen_args = [
+            deepen_args = shallow_fetch_args(
                 "-c",
                 "gc.auto=0",
                 "-c",
@@ -3756,7 +3809,7 @@ def _fetch_via_bounded_store(
                 "--",
                 remote_url,
                 *["+" + mapping for mapping in mappings],
-            ]
+            )
             deepened = command(cache, deepen_args, check=False)
             if deepened.returncode:
                 return deepened
@@ -3770,8 +3823,9 @@ def _fetch_via_bounded_store(
         if shutil.disk_usage(common).free < max(2 * 1024 ** 3, acquired_bytes * 2):
             raise ReviewError("Insufficient headroom to import the acquisition cache.")
         tips = list(dict.fromkeys(tips))
-        local_args = ["-c", "protocol.file.allow=always", "-c", "gc.auto=0", "-c", "maintenance.auto=false",
-                      "fetch", "--progress", "--no-tags", "--update-shallow"]
+        local_args = shallow_fetch_args("-c", "protocol.file.allow=always", "-c", "gc.auto=0",
+                                        "-c", "maintenance.auto=false",
+                                        "fetch", "--progress", "--no-tags", "--update-shallow")
         session.event("local history import")
         with source_lock(common, phase="source-import"):
             # Re-snapshot after the network phase. This captures retention roots
@@ -3927,7 +3981,8 @@ def parse_ado_url(url: str) -> dict:
         raise ReviewError("Repository is not a recognized Azure DevOps HTTPS URL.")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", org):
         raise ReviewError("Unsafe Azure DevOps organization name.")
-    return {"org_url": f"https://dev.azure.com/{org.lower()}", "project": project, "repository": repository}
+    # Keep the organization's case: ADO ignores it, but a path-scoped egress policy may not.
+    return {"org_url": f"https://dev.azure.com/{org}", "project": project, "repository": repository}
 
 
 def parse_github_url(url: str) -> dict:
@@ -4052,8 +4107,18 @@ def write_new_text(path: Path, text: str) -> None:
             os.link(temporary, path)  # Atomic publication, refusing existing paths.
         except FileExistsError:
             raise ReviewError("Artifact already exists; previous runs are never overwritten.") from None
+        except PermissionError:
+            # Some sandbox filesystems (gVisor 9p workspace mounts) refuse hard links. Claim the name
+            # exclusively, then rename the finished file over the claim: still never overwrites a prior
+            # artifact, and readers see either an empty claim or the whole text, never a partial write.
+            try:
+                os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+            except FileExistsError:
+                raise ReviewError("Artifact already exists; previous runs are never overwritten.") from None
+            os.replace(temporary, path)
     finally:
-        os.unlink(temporary)
+        if os.path.lexists(temporary):
+            os.unlink(temporary)
 
 
 def write_new_json(path: Path, value: dict) -> None:
@@ -4069,7 +4134,7 @@ class AdoClient:
         org = parsed.path.strip("/")
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", org) or parsed.port not in (None, 443):
             raise ReviewError("Invalid Azure DevOps organization.")
-        self.org_url = f"https://dev.azure.com/{org.lower()}"
+        self.org_url = f"https://dev.azure.com/{org}"
         self.timeout, self.retries = timeout, retries
         self.last_headers: dict[str, str] = {}
 

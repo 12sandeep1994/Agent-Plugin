@@ -21,7 +21,7 @@ The three verbatim skills are generated from AgentV2 (LmDotnetTools). Do not edi
 here; change them upstream and re-sync.
 
 <!-- sync:source-start -->
-Source: AgentV2 `samples/CodeReviewDaemon.Sample/review-host-kit/skills/` at commit `b6bdc0c17b4e96c95ae3ad99734ec22bc8b676a0`.
+Source: AgentV2 `samples/CodeReviewDaemon.Sample/review-host-kit/skills/` at commit `135d8063f4aeb8a1f797ca4b1bc1763f4b6e4fbc`.
 <!-- sync:source-end -->
 
 Re-sync from an AgentV2 checkout (copies committed content of `--ref`, default `HEAD`,

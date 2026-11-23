@@ -184,7 +184,7 @@ def _validate_org_url(org_url: str) -> str:
     org = parsed.path.strip("/")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", org) or parsed.port not in (None, 443):
         raise ReviewError("Invalid Azure DevOps organization.")
-    return f"https://dev.azure.com/{org.lower()}"
+    return f"https://dev.azure.com/{org}"
 
 
 def _validate_relative_path(path: str) -> tuple[str, dict[str, str]]:
@@ -1013,7 +1013,8 @@ def _resolve_org_url(explicit_org: str | None) -> str:
         return explicit_org
     root = discover_root(None)
     modules = read_submodules(root, read_only=True)
-    organizations = sorted({module["org_url"] for module in modules if module["provider"] == "ado"})
+    organizations = sorted({module["org_url"].casefold(): module["org_url"]
+                            for module in modules if module["provider"] == "ado"}.values())
     if len(organizations) != 1:
         raise ReviewError(
             "Could not determine a single Azure DevOps organization from .gitmodules; pass --org explicitly."
