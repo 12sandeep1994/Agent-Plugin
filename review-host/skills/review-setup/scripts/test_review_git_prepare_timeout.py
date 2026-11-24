@@ -42,5 +42,20 @@ class CommitReadTimeoutTests(unittest.TestCase):
         self.assertGreater(WORKTREE_GIT_TIMEOUT, 300)
 
 
+class WholeTreeScanTimeoutTests(unittest.TestCase):
+    def test_status_and_ignored_scans_get_the_worktree_limit(self):
+        # Prepare's postconditions and reviewd's slot admission call these on the outer worktree.
+        import review_common as common
+
+        for name in ("run_git", "run_git_read"):
+            with patch.object(common, name, return_value=subprocess.CompletedProcess([], 0, stdout="", stderr="")) as runner:
+                read_only = name == "run_git_read"
+                common.git_status(Path("/source"), read_only=read_only)
+                common.git_ignored_paths(Path("/source"), read_only=read_only)
+            self.assertEqual(runner.call_count, 2)
+            for call in runner.call_args_list:
+                self.assertEqual(call.kwargs.get("timeout"), WORKTREE_GIT_TIMEOUT)
+
+
 if __name__ == "__main__":
     unittest.main()

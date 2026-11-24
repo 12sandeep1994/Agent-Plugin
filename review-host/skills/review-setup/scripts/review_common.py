@@ -4248,8 +4248,11 @@ def read_submodules(root: Path, *, read_only: bool = False) -> list[dict]:
 
 
 def git_status(repo: Path, *, read_only: bool = False) -> list[tuple[str, str]]:
+    # Whole-tree scans: prepare's postconditions and reviewd's slot admission run these on the outer
+    # worktree, so they share the worktree limit (a cold scan on a slow mount outlasted 300 s).
     runner = run_git_read if read_only else run_git
-    raw = runner(repo, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]).stdout
+    raw = runner(repo, ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+                 timeout=WORKTREE_GIT_TIMEOUT).stdout
     records, entries, index = raw.split("\0"), [], 0
     while index < len(records) and records[index]:
         row = records[index]
@@ -4271,7 +4274,7 @@ def git_ignored_paths(
     args = ["ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", "."]
     if protected:
         safe_path(repo, protected)
-    paths = filter(None, runner(repo, args).stdout.split("\0"))
+    paths = filter(None, runner(repo, args, timeout=WORKTREE_GIT_TIMEOUT).stdout.split("\0"))
     if protected:
         paths = (
             path
