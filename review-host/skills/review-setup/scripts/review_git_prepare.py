@@ -78,6 +78,13 @@ _OPERATION_MARKERS = (
     "index.lock",
 )
 
+# Rewriting a whole working tree (`reset --hard`, `clean -ffdx`, `checkout`,
+# `worktree add`/`remove`) touches every file, so on a large repository over a
+# slow bind mount it can outlast `run_git`'s 300 s default: a sandboxed prepare
+# timed out in the nested `reset --hard` below. These calls get a longer limit;
+# fetches and reads keep the default.
+_WORKTREE_GIT_TIMEOUT = 900.0
+
 
 # ---------------------------------------------------------------------------
 # Fetch-auth fallback chain
@@ -312,15 +319,15 @@ def _prepare_outer(state: ReviewState, outer: Path, root_head: str) -> None:
     # lifecycle, but checked defensively), detach it first so the reset
     # cannot instead move a branch pointer.
     if current_ref(outer, read_only=state.read_only) is not None:
-        run_git(outer, ["checkout", "--detach", "-q", "HEAD"])
-    run_git(outer, ["reset", "--hard", root_head])
-    run_git(outer, ["clean", "-ffdx", "-e", "/repos"])
+        run_git(outer, ["checkout", "--detach", "-q", "HEAD"], timeout=_WORKTREE_GIT_TIMEOUT)
+    run_git(outer, ["reset", "--hard", root_head], timeout=_WORKTREE_GIT_TIMEOUT)
+    run_git(outer, ["clean", "-ffdx", "-e", "/repos"], timeout=_WORKTREE_GIT_TIMEOUT)
 
 
 def _repair_outer_registration(state: ReviewState, outer: Path, root_head: str) -> None:
     rows = worktree_rows(state.root, read_only=state.read_only)
     if _find_worktree_row(rows, outer) is not None:
-        run_git(state.root, ["worktree", "remove", "--force", str(outer)], check=False)
+        run_git(state.root, ["worktree", "remove", "--force", str(outer)], check=False, timeout=_WORKTREE_GIT_TIMEOUT)
     run_git(state.root, ["worktree", "prune"], check=False)
     if outer.exists():
         _validate_contained(state.root, outer)
@@ -335,7 +342,7 @@ def _repair_outer_registration(state: ReviewState, outer: Path, root_head: str) 
     # below fails with "is a missing but already registered worktree".
     run_git(state.root, ["worktree", "prune"], check=False)
     outer.parent.mkdir(parents=True, exist_ok=True)
-    run_git(state.root, ["worktree", "add", "--detach", "-q", str(outer), root_head])
+    run_git(state.root, ["worktree", "add", "--detach", "-q", str(outer), root_head], timeout=_WORKTREE_GIT_TIMEOUT)
 
 
 # ---------------------------------------------------------------------------
@@ -360,17 +367,17 @@ def _prepare_nested(state: ReviewState, pool: SourcePool, nested: Path, merge_sh
         # weaken final verification.
         return
     _clear_operation_markers(nested)
-    run_git(nested, ["reset", "--hard"])
-    run_git(nested, ["clean", "-ffdx"])
-    run_git(nested, ["checkout", "--detach", "-q", merge_sha])
-    run_git(nested, ["reset", "--hard", merge_sha])
-    run_git(nested, ["clean", "-ffdx"])
+    run_git(nested, ["reset", "--hard"], timeout=_WORKTREE_GIT_TIMEOUT)
+    run_git(nested, ["clean", "-ffdx"], timeout=_WORKTREE_GIT_TIMEOUT)
+    run_git(nested, ["checkout", "--detach", "-q", merge_sha], timeout=_WORKTREE_GIT_TIMEOUT)
+    run_git(nested, ["reset", "--hard", merge_sha], timeout=_WORKTREE_GIT_TIMEOUT)
+    run_git(nested, ["clean", "-ffdx"], timeout=_WORKTREE_GIT_TIMEOUT)
 
 
 def _repair_nested_registration(state: ReviewState, pool: SourcePool, nested: Path, merge_sha: str) -> None:
     rows = worktree_rows(pool.store, read_only=state.read_only)
     if _find_worktree_row(rows, nested) is not None:
-        run_git(pool.store, ["worktree", "remove", "--force", str(nested)], check=False)
+        run_git(pool.store, ["worktree", "remove", "--force", str(nested)], check=False, timeout=_WORKTREE_GIT_TIMEOUT)
     run_git(pool.store, ["worktree", "prune"], check=False)
     if nested.exists():
         _validate_contained(state.root, nested)
@@ -386,7 +393,7 @@ def _repair_nested_registration(state: ReviewState, pool: SourcePool, nested: Pa
     # ever runs, so it is already a reachable object in `pool.store` --
     # no separate "baseline tip" is needed, and the destructive sequence
     # right after this call re-confirms/re-applies the same target anyway.
-    run_git(pool.store, ["worktree", "add", "--detach", "-q", str(nested), merge_sha])
+    run_git(pool.store, ["worktree", "add", "--detach", "-q", str(nested), merge_sha], timeout=_WORKTREE_GIT_TIMEOUT)
 
 
 # ---------------------------------------------------------------------------
