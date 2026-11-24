@@ -61,6 +61,7 @@ from review_common import (
     utc_now,
     validate_sha,
     worktree_rows,
+    WORKTREE_GIT_TIMEOUT,
 )
 
 # Mirrors `review_common.assert_no_git_operation`'s literal marker list --
@@ -83,7 +84,7 @@ _OPERATION_MARKERS = (
 # slow bind mount it can outlast `run_git`'s 300 s default: a sandboxed prepare
 # timed out in the nested `reset --hard` below. These calls get a longer limit;
 # fetches and reads keep the default.
-_WORKTREE_GIT_TIMEOUT = 900.0
+_WORKTREE_GIT_TIMEOUT = WORKTREE_GIT_TIMEOUT
 
 
 # ---------------------------------------------------------------------------

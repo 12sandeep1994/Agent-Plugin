@@ -21,16 +21,19 @@ from review_common import (
     ReviewError, ReviewState, SourcePool, assert_no_git_operation,
     create_or_update_parent_remote_ref, current_ref, discover_root, file_hash,
     lock_session, read_parent_remote_ref, repo_slug, require_commit_identity,
-    run_git, run_git_read, safe_path, slot_writer_scope,
+    run_git, run_git_read, safe_path, slot_writer_scope, WORKTREE_GIT_TIMEOUT,
 )
 from review_pool_admin import select_module_by_name
 
 
 def observe(repo: Path, *args: str) -> str:
+    # Whole-tree diff/status/ls-files reads of the source run several times per commit;
+    # on a slow sandbox mount one can outlast the 300 s default, so all observations
+    # here share the worktree limit (cheap reads finish long before it).
     command = list(args)
     if command and command[0] == "diff":
         command.insert(1, "--no-ext-diff")
-    return run_git_read(repo, command).stdout
+    return run_git_read(repo, command, timeout=WORKTREE_GIT_TIMEOUT).stdout
 
 
 def changed_paths(repo: Path) -> set[str]:

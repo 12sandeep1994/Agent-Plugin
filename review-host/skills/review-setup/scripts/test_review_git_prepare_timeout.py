@@ -1,9 +1,12 @@
-"""Whole-worktree Git rewrites in prepare get the longer limit; a large tree on a slow mount outlasted 300 s."""
+"""Whole-worktree Git calls in prepare and commit get the longer limit; a large tree on a slow mount outlasted 300 s."""
+import subprocess
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import review_commit as commit
 import review_git_prepare as prepare
+from review_common import WORKTREE_GIT_TIMEOUT
 
 
 class WorktreeGitTimeoutTests(unittest.TestCase):
@@ -21,6 +24,22 @@ class WorktreeGitTimeoutTests(unittest.TestCase):
         for call in run_git.call_args_list:
             self.assertEqual(call.kwargs.get("timeout"), prepare._WORKTREE_GIT_TIMEOUT)
         self.assertGreater(prepare._WORKTREE_GIT_TIMEOUT, 300)
+
+
+class CommitReadTimeoutTests(unittest.TestCase):
+    def test_source_fingerprint_whole_tree_reads_get_the_worktree_limit(self):
+        def fake_read(repo, args, check=True, **kwargs):
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        with patch.object(commit, "run_git_read", side_effect=fake_read) as run_git_read, \
+                patch.object(commit, "current_ref", return_value=None):
+            commit.source_fingerprint(Path("/source"))
+        commands = [call.args[1][:2] for call in run_git_read.call_args_list]
+        for expected in (["diff", "--no-ext-diff"], ["ls-files", "--others"], ["status", "--porcelain=v1"]):
+            self.assertIn(expected, commands)
+        for call in run_git_read.call_args_list:
+            self.assertEqual(call.kwargs.get("timeout"), WORKTREE_GIT_TIMEOUT)
+        self.assertGreater(WORKTREE_GIT_TIMEOUT, 300)
 
 
 if __name__ == "__main__":

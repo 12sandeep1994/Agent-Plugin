@@ -2883,6 +2883,14 @@ def _gate_unscoped_push(args: list[str]) -> None:
         )
 
 
+# Git calls that visit every file of a working tree (`reset --hard`, `clean`,
+# `checkout`, `worktree add`/`remove`, and whole-tree `diff`/`status`/`ls-files`
+# observations) can outlast the 300 s default on a large repository over a slow
+# bind mount: on a sandbox's 9p /workspace a cold `diff --name-only` of a
+# 6.5k-file source took 295 s. Callers opt into this longer limit per call.
+WORKTREE_GIT_TIMEOUT = 900.0
+
+
 def run_git(repo: Path, args: list[str], check: bool = True, *,
             read_only: bool = False, input_data: bytes | None = None,
             timeout: float = 300, progress: FetchProgress | None = None,
@@ -2929,9 +2937,11 @@ def run_git(repo: Path, args: list[str], check: bool = True, *,
 
 def run_git_read(repo: Path, args: list[str], check: bool = True, *,
                   git_binary: str = "git",
-                  extra_env: Mapping[str, str] | None = None) -> subprocess.CompletedProcess:
+                  extra_env: Mapping[str, str] | None = None,
+                  timeout: float = 300) -> subprocess.CompletedProcess:
     """Run a Git observation with optional lock/index refreshes disabled."""
-    return run_git(repo, args, check=check, read_only=True, git_binary=git_binary, extra_env=extra_env)
+    return run_git(repo, args, check=check, read_only=True, timeout=timeout,
+                   git_binary=git_binary, extra_env=extra_env)
 
 
 # ---------------------------------------------------------------------------
